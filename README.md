@@ -278,7 +278,7 @@ L'application s'ouvre automatiquement sur `http://localhost:8501`
 
 L'application est deployee sur Streamlit Cloud et accessible directement via ce lien :
 
-**[Lien a ajouter apres deploiement sur share.streamlit.io]**
+**[https://biprojet01-ydvahtkwbcomw7u4f3k9uw.streamlit.app/]**
 
 ---
 
