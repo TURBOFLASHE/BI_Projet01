@@ -1,0 +1,14 @@
+# Virtual environments
+.venv/
+venv/
+
+# VS Code / Visual Studio
+.vs/
+.vscode/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Zip files
+*.zip
