@@ -3,14 +3,17 @@ etl_build_views.py
 ==================
 Couche ETL / Transformation — Best Practices BI
 ------------------------------------------------
-Ce script lit les données brutes (data.csv, data_achats.csv),
-applique toutes les transformations, calcule les agrégats (PMP, marges)
-et produit des VUES pré-calculées sous forme de CSV.
+Ce script lit les données brutes (data.csv, data_achats.csv,
+data_ventes_new.csv, data_achats_new.csv), harmonise les colonnes,
+fusionne les fichiers anciens et nouveaux, applique toutes les
+transformations, calcule les agrégats (PMP, marges) et produit
+des VUES pré-calculées sous forme de CSV.
 
 Architecture en 3 couches :
-  RAW     → data.csv, data_achats.csv          (données sources brutes)
-  VUES    → vue_*.csv                           (tables de faits + dims + agrégats)
-  APP     → marges_partie03.py, app.py ...      (lecture seule des vues, 0 calcul)
+  RAW     → data.csv, data_achats.csv              (données sources anciennes)
+            data_ventes_new.csv, data_achats_new.csv (données sources nouvelles)
+  VUES    → vue_*.csv                               (tables de faits + dims + agrégats)
+  APP     → app.py ...                              (lecture seule des vues, 0 calcul)
 
 Lancer ce script une seule fois (ou à chaque mise à jour des données brutes) :
   python etl_build_views.py
@@ -28,31 +31,135 @@ import pandas as pd
 import os
 
 # ── Chemins ────────────────────────────────────────────────────────────────────
-RAW_VENTES  = "data.csv"
-RAW_ACHATS  = "data_achats.csv"
-OUTPUT_DIR  = "."   # même dossier, changer si besoin (ex: "vues/")
+RAW_VENTES      = "data.csv"
+RAW_ACHATS      = "data_achats.csv"
+RAW_VENTES_NEW  = "data_ventes_new.csv"
+RAW_ACHATS_NEW  = "data_achats_new.csv"
+OUTPUT_DIR      = "."   # même dossier, changer si besoin (ex: "vues/")
+
+
+def clean_numeric(series):
+    """
+    Nettoie une colonne numérique :
+    - Supprime les virgules de milliers (ex: "1,590,000" → "1590000")
+    - Convertit en float
+    """
+    return (
+        series.astype(str)
+        .str.replace(",", "", regex=False)
+        .str.strip()
+        .replace("nan", pd.NA)
+        .astype(float)
+    )
+
+
+def load_ventes():
+    """
+    Charge et fusionne les fichiers ventes ancien et nouveau.
+
+    Différences entre les deux fichiers (même ordre de colonnes) :
+      Ancien  → "Qte"       | dates format YYYY-MM-DD | montants sans virgules
+      Nouveau → "Quantité"  | dates format M/D/YYYY   | montants avec virgules (ex: "384,000")
+                + colonnes parasites "Unnamed: 10", "Unnamed: 11"
+
+    Résultat uniforme :
+      Num.CMD | Date.CMD | Client | Adresse | Code Produit | Produit
+      Qte | Montant HT | Taxe | Montant TTC
+    """
+    # ── Ancien fichier (colonnes de référence) ─────────────────────────────
+    old = pd.read_csv(RAW_VENTES)
+
+    # ── Nouveau fichier ────────────────────────────────────────────────────
+    new = pd.read_csv(RAW_VENTES_NEW)
+
+    # Supprimer les colonnes parasites (Unnamed: ...)
+    new = new.loc[:, ~new.columns.str.startswith("Unnamed")]
+
+    # Renommer "Quantité" → "Qte" pour aligner sur l'ancien
+    new = new.rename(columns={"Quantité": "Qte"})
+
+    # Nettoyer les colonnes numériques (virgules de milliers)
+    for col in ["Qte", "Montant HT", "Taxe", "Montant TTC"]:
+        new[col] = clean_numeric(new[col])
+
+    # ── Concaténation ──────────────────────────────────────────────────────
+    ventes = pd.concat([old, new], ignore_index=True)
+    print(f"      ventes ancien : {len(old)} lignes | nouveau : {len(new)} lignes "
+          f"| total fusionné : {len(ventes)} lignes")
+    return ventes
+
+
+def load_achats():
+    """
+    Charge et fusionne les fichiers achats ancien et nouveau.
+
+    Différences entre les deux fichiers (même ordre de colonnes) :
+      Ancien  → "QTY"       | dates format YYYY-MM-DD | montants sans virgules
+      Nouveau → "Quantité"  | dates format M/D/YYYY   | montants avec virgules (ex: "1,590,000")
+                + colonnes parasites "Unnamed: 9", "Unnamed: 10"
+
+    Résultat uniforme :
+      Num.CMD | Date.CMD | Fournisseur | Code Produit | Produit
+      QTY | Montant HT | Taxe | Montant TTC
+    """
+    # ── Ancien fichier (colonnes de référence) ─────────────────────────────
+    old = pd.read_csv(RAW_ACHATS)
+
+    # ── Nouveau fichier ────────────────────────────────────────────────────
+    new = pd.read_csv(RAW_ACHATS_NEW)
+
+    # Supprimer les colonnes parasites (Unnamed: ...)
+    new = new.loc[:, ~new.columns.str.startswith("Unnamed")]
+
+    # Renommer "Quantité" → "QTY" pour aligner sur l'ancien
+    new = new.rename(columns={"Quantité": "QTY"})
+
+    # Nettoyer les colonnes numériques (virgules de milliers)
+    for col in ["QTY", "Montant HT", "Taxe", "Montant TTC"]:
+        new[col] = clean_numeric(new[col])
+
+    # ── Concaténation ──────────────────────────────────────────────────────
+    achats = pd.concat([old, new], ignore_index=True)
+    print(f"      achats ancien : {len(old)} lignes | nouveau : {len(new)} lignes "
+          f"| total fusionné : {len(achats)} lignes")
+    return achats
+
 
 def build_views():
     print("=" * 55)
     print("  ETL — Construction des vues BI")
     print("=" * 55)
 
-    # ── 1. Chargement des données brutes ──────────────────────────────────────
-    print("\n[1/6] Chargement des données brutes...")
-    ventes = pd.read_csv(RAW_VENTES)
-    achats = pd.read_csv(RAW_ACHATS)
+    # ── 1. Chargement et fusion des données brutes ────────────────────────────
+    print("\n[1/6] Chargement et fusion des données brutes...")
+    ventes = load_ventes()
+    achats = load_achats()
 
-    ventes["Date.CMD"] = pd.to_datetime(ventes["Date.CMD"])
-    achats["Date.CMD"] = pd.to_datetime(achats["Date.CMD"])
+    # format='mixed' gère les deux formats de date en même temps :
+    #   YYYY-MM-DD (ancien) et M/D/YYYY (nouveau)
+    ventes["Date.CMD"] = pd.to_datetime(ventes["Date.CMD"], format="mixed", dayfirst=False)
+    achats["Date.CMD"] = pd.to_datetime(achats["Date.CMD"], format="mixed", dayfirst=False)
 
-    print(f"      ventes : {len(ventes)} lignes | achats : {len(achats)} lignes")
+    print(f"      Total ventes : {len(ventes)} lignes | Total achats : {len(achats)} lignes")
 
     # ── 2. VUE : fait_ventes ─────────────────────────────────────────────────
     print("\n[2/6] Construction vue_fait_ventes...")
 
-    TYPE_VENTE_MAP = {"SLSD": "Direct", "SLSR": "Retail", "SLSG": "Government"}
+    # Mapping basé sur la DERNIÈRE LETTRE du préfixe (avant le "/")
+    # Ex: VCD → D, VCR → R, SLSD → D, SLSR → R  (flexible quel que soit le codage)
+    TYPE_VENTE_MAP = {
+        "D": "Direct",
+        "R": "Retail",
+        "G": "Government",
+    }
 
-    ventes["Type Vente"]        = ventes["Num.CMD"].str[:4].map(TYPE_VENTE_MAP).fillna("Autre")
+    ventes["Type Vente"]        = (
+        ventes["Num.CMD"]
+        .str.split("/").str[0]   # préfixe avant le "/"  ex: "VCD", "VCR", "SLSD"
+        .str[-1]                 # dernière lettre        ex: "D",   "R",   "D"
+        .map(TYPE_VENTE_MAP)
+        .fillna("Autre")
+    )
     ventes["Catégorie Produit"] = ventes["Code Produit"].str.split(".").str[0]
     ventes["Wilaya"]            = ventes["Adresse"].str.split(",").str[-1].str.strip()
     ventes["Forme Juridique"]   = ventes["Client"].str.split().str[0]
@@ -68,9 +175,20 @@ def build_views():
     # ── 3. VUE : fait_achats ─────────────────────────────────────────────────
     print("\n[3/6] Construction vue_fait_achats...")
 
-    TYPE_ACHAT_MAP = {"POL": "Local", "POI": "Import"}
+    # Mapping basé sur la DERNIÈRE LETTRE du préfixe (avant le "/")
+    # Ex: AFL → L, AFI → I, POL → L, POI → I  (flexible quel que soit le codage)
+    TYPE_ACHAT_MAP = {
+        "L": "Local",
+        "I": "Import",
+    }
 
-    achats["Type Achat"]        = achats["Num.CMD"].str[:3].map(TYPE_ACHAT_MAP).fillna("Autre")
+    achats["Type Achat"]        = (
+        achats["Num.CMD"]
+        .str.split("/").str[0]   # préfixe avant le "/"  ex: "AFL", "AFI", "POL"
+        .str[-1]                 # dernière lettre        ex: "L",   "I",   "L"
+        .map(TYPE_ACHAT_MAP)
+        .fillna("Autre")
+    )
     achats["Catégorie Produit"] = achats["Code Produit"].str.split(".").str[0]
     achats["Forme Juridique"]   = achats["Fournisseur"].str.split().str[0]
     achats["Mois"]              = achats["Date.CMD"].dt.month
